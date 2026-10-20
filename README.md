@@ -88,3 +88,5 @@ node .toolkit/src/release.mjs verify --app example --bundle release-bundle --sha
 The bump command updates configured fields and creates a notes placeholder for version-specific notes files. Replace it before release; for section-based changelogs, add the new section yourself. Never silently delete app IDs or change tag prefixes. Use a fresh version for rollback. There is no implemented Prepare-release-PR button.
 
 Run `npm run check` and `npm test` on Node 24+. Tests include numeric/prerelease ordering, configuration, version consistency, real-Git bump enforcement, bundles, strict signatures/tampering, draft retries, and simulated publication failures. Local tests and workflow lint do not establish that a native package installs correctly or that hosted release credentials are configured.
+
+`notesAsset` can name a required verified text artifact containing observed signing status. The publisher appends it to the source-controlled notes and refreshes that status on a same-source draft retry. Detached checksum exclusions must be explicit; uploaded SHA256 digests still cover these proof files.

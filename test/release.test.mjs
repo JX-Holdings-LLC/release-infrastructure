@@ -65,6 +65,21 @@ test('selection ignores drafts, isolates namespaces/channels, refuses downgrades
   assert.equal(select(f.manifest,f.config,[],'stable').selected.length,0);
   fs.rmSync(f.root,{recursive:true,force:true});
 });
+test('independent manifest advances do not force unrelated apps to bump',()=>{
+  const f=fixture();const m=structuredClone(f.manifest),c=structuredClone(f.config);
+  m.apps.agent={title:'Agent',version:'1.2.3'};c.apps.agent={...c.apps.app,tagPrefix:'agent-v',paths:['agent/**']};
+  const next=structuredClone(m);next.apps.agent.version='1.2.4';
+  checkAdvances(m,c,next,c,['release.json','agent/VERSION','.release/notes/agent/1.2.4.md']);
+  fs.rmSync(f.root,{recursive:true,force:true});
+});
+test('a primary v namespace can coexist with vendor package namespaces',async()=>{
+  const f=fixture();await withRoot(f,()=>{
+    f.manifest.apps.vendor={title:'Vendor',version:'0.1.0'};
+    f.config.apps.vendor={...f.config.apps.app,tagPrefix:'vendor-v'};
+    validate(f.manifest,f.config);
+    f.config.apps.vendor.tagPrefix='v';assert.throws(()=>validate(f.manifest,f.config),/namespace/);
+  });
+});
 test('exact complete bundle rejects missing, extra, empty and symbolic assets',async()=>{
   const f=fixture();const bundle=payload(f.root);
   await verifyBundle('app',f.manifest,f.config,bundle,source);

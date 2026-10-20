@@ -67,9 +67,9 @@ export function validate(manifest, config, reader=read) {
     if(!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id) || !object(app) || typeof app.title!=='string' || !app.title.trim() || /[\r\n]/.test(app.title)) fail(`Invalid app: ${id}`);
     semver(app.version);
     if(!object(c) || typeof c.tagPrefix!=='string' || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(c.tagPrefix) || c.tagPrefix.includes('..')) fail(`Invalid tagPrefix: ${id}`);
-    if(prefixes.some(p=>p.startsWith(c.tagPrefix)||c.tagPrefix.startsWith(p))) fail(`Overlapping tag namespace: ${id}`);
+    if(prefixes.some(p=>p===c.tagPrefix || (p.startsWith(c.tagPrefix)&&/^\d/.test(p.slice(c.tagPrefix.length))) || (c.tagPrefix.startsWith(p)&&/^\d/.test(c.tagPrefix.slice(p.length))))) fail(`Overlapping tag namespace: ${id}`);
     prefixes.push(c.tagPrefix);
-    if(!Array.isArray(c.paths) || !c.paths.length || c.paths.some(p=>typeof p!=='string' || (p!=='**' && (!p || p.includes('..') || /[\\\[\]?]/.test(p))))) fail(`Invalid paths: ${id}`);
+    if(!Array.isArray(c.paths) || !c.paths.length || c.paths.some(p=>typeof p!=='string' || (p!=='**' && (!p || p.includes('..') || /[\\\[\]?]/.test(p) || p.replace(/\/\*\*$/,'').includes('*'))))) fail(`Invalid paths: ${id}`);
     if(!Array.isArray(c.versionFiles) || !Array.isArray(c.assets) || !c.assets.length) fail(`Missing versionFiles/assets: ${id}`);
     const assets=c.assets.map(a=>safePath(expand(a,id,app.version),true));
     if(new Set(assets).size!==assets.length || assets.some(a=>reserved.includes(a) || a===(c.checksumFile??'SHA256SUMS.txt'))) fail(`Duplicate/reserved assets: ${id}`);
@@ -79,6 +79,7 @@ export function validate(manifest, config, reader=read) {
       new RegExp(expandPattern(rule.pattern,id,app.version));
     }
     safePath(expand(c.notes,id,app.version));
+    if(c.notesAsset && !assets.includes(safePath(c.notesAsset,true)))fail(`Additional notes must be a required asset: ${id}`);
     if(!['standard','strict'].includes(c.security)) fail(`Unknown security profile: ${id}`);
     if(c.security==='strict') {
       safePath(c.publicKey);
@@ -96,7 +97,7 @@ export function checkAdvances(base, previousConfig, proposed, config, changed) {
     const delta=compare(proposed.apps[id].version,base.apps[id].version);
     if(delta<0) fail(`Version decreased: ${id}`);
     const infrastructure=changed.some(f=>f==='.release/config.json'||f.startsWith('.github/workflows/'));
-    const affected=changed.some(f=>[...(previousConfig.apps[id]?.paths??[]),...(config.apps[id]?.paths??[])].some(p=>matches(f,p)));
+    const affected=changed.filter(f=>f!=='release.json' && (!f.startsWith('.release/notes/') || f.startsWith(`.release/notes/${id}/`))).some(f=>[...(previousConfig.apps[id]?.paths??[]),...(config.apps[id]?.paths??[])].some(p=>matches(f,p)));
     if((infrastructure||affected) && delta<=0) fail(`Advance ${id} for the changed source/workflows`);
   }
   if(previousConfig.bumpPolicy==='every-main-change' && changed.length && !Object.keys(proposed.apps).some(id=>!base.apps[id]||compare(proposed.apps[id].version,base.apps[id].version)>0)) fail('Every main change requires a version advance');
@@ -226,8 +227,15 @@ export async function publish(plan, app, manifest, config, bundle, client) {
   let target=client.tagTarget(selected.tag);
   if(target && target!==plan.sourceSha)fail('Existing tag points to different source');
   if(existing && (!target || existing.body?.includes(`<!-- release-source:${plan.sourceSha} -->`)!==true))fail('Draft is not bound to this original source');
+  let publishedNotes=notes;
+  if(c.notesAsset) {
+    safePath(c.notesAsset,true);
+    if(!Object.hasOwn(inv.files,c.notesAsset))fail('Additional release notes must be part of the verified payload');
+    publishedNotes+='\n\n'+read(path.join(bundle,c.notesAsset)).trim();
+  }
   if(!target)client.createTag(selected.tag,plan.sourceSha);
-  if(!existing)existing=client.createDraft(selected,plan,notes);
+  if(existing)client.updateDraft?.(selected,plan,publishedNotes);
+  if(!existing)existing=client.createDraft(selected,plan,publishedNotes);
   const unexpected=(existing.assets??[]).filter(a=>!files.includes(a.name));
   if(unexpected.length)fail('Draft contains unexpected assets; inspect it before retrying');
   client.upload(selected.tag,files.map(f=>path.join(bundle,f)));
@@ -248,6 +256,11 @@ function githubClient(repo) {
       write(file,notes+`\n\n<!-- release-source:${plan.sourceSha} -->\n`);
       gh('release','create',selected.tag,'--repo',repo,'--verify-tag','--draft','--title',`${selected.title} ${selected.version}`,'--notes-file',file,'--latest=false',...(plan.channel==='preview'?['--prerelease']:[]));
       return api(`repos/${repo}/releases/tags/${encodeURIComponent(selected.tag)}`);
+    },
+    updateDraft:(selected,plan,notes)=>{
+      const file=path.join(process.env.RUNNER_TEMP??'.release-tmp',`notes-${selected.app}.md`);
+      write(file,notes+`\n\n<!-- release-source:${plan.sourceSha} -->\n`);
+      gh('release','edit',selected.tag,'--repo',repo,'--title',`${selected.title} ${selected.version}`,'--notes-file',file);
     },
     upload:(tag,files)=>gh('release','upload',tag,...files,'--repo',repo,'--clobber'),
     getRelease:tag=>api(`repos/${repo}/releases/tags/${encodeURIComponent(tag)}`),
