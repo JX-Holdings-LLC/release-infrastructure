@@ -1,0 +1,63 @@
+name: Plan releases
+on:
+  workflow_call:
+    inputs:
+      toolkit-ref:
+        required: true
+        type: string
+      channel:
+        default: stable
+        type: string
+      app:
+        default: ''
+        type: string
+    outputs:
+      selected:
+        value: ${{ jobs.plan.outputs.selected }}
+      sha:
+        value: ${{ jobs.plan.outputs.sha }}
+      apps:
+        value: ${{ jobs.plan.outputs.apps }}
+      matrix:
+        value: ${{ jobs.plan.outputs.matrix }}
+permissions:
+  contents: read
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      selected: ${{ steps.plan.outputs.selected }}
+      sha: ${{ steps.plan.outputs.sha }}
+      apps: ${{ steps.plan.outputs.apps }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Require an immutable toolkit pin
+        env:
+          TOOLKIT_REF: ${{ inputs.toolkit-ref }}
+        run: '[[ "$TOOLKIT_REF" =~ ^[0-9a-f]{40}$ ]]'
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: JX-Holdings-LLC/release-infrastructure
+          ref: ${{ inputs.toolkit-ref }}
+          path: .toolkit
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - id: plan
+        name: Select advanced apps at the captured main SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_CHANNEL: ${{ inputs.channel }}
+          RELEASE_APP: ${{ inputs.app }}
+        run: node .toolkit/src/release.mjs plan --channel "$RELEASE_CHANNEL" --app "$RELEASE_APP"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-plan
+          path: release-plan.json
+          if-no-files-found: error

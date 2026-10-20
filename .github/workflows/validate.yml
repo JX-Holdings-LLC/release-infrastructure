@@ -1,0 +1,35 @@
+name: Validate release versions
+on:
+  workflow_call:
+    inputs:
+      toolkit-ref:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require an immutable toolkit pin
+        env:
+          TOOLKIT_REF: ${{ inputs.toolkit-ref }}
+        run: '[[ "$TOOLKIT_REF" =~ ^[0-9a-f]{40}$ ]]'
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: JX-Holdings-LLC/release-infrastructure
+          ref: ${{ inputs.toolkit-ref }}
+          path: .toolkit
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: Validate manifest and required version advances
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: node .toolkit/src/release.mjs validate
