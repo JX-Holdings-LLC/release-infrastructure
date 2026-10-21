@@ -186,6 +186,21 @@ if(a[0]==='api'&&a[1].includes('/releases?'))console.log(JSON.stringify([{tag_na
     assert.throws(()=>c.getRelease('v2.0.0'),/No release found/);
   } finally {process.env.PATH=PATH;if(temp===undefined)delete process.env.RUNNER_TEMP;else process.env.RUNNER_TEMP=temp;fs.rmSync(dir,{recursive:true,force:true});}
 });
+test('the GitHub client waits for a draft it just created to reach the release list', () => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'gh-'));
+  // Stands in for gh: like GitHub moments after a release is created, the first listing doesn't show it yet.
+  fs.writeFileSync(path.join(dir,'gh'),`#!/usr/bin/env node
+const fs=require('node:fs'),path=require('node:path');
+const a=process.argv.slice(2),seen=path.join(${JSON.stringify(dir)},'listed');
+if(a[0]==='api'&&a[1].includes('/releases?')){const n=fs.existsSync(seen)?1:0;fs.writeFileSync(seen,'1');console.log(JSON.stringify(n?[{tag_name:'v1.0.0',draft:true,assets:[]}]:[]));}
+`,{mode:0o755});
+  const PATH=process.env.PATH, temp=process.env.RUNNER_TEMP;
+  process.env.PATH=dir+path.delimiter+PATH;process.env.RUNNER_TEMP=dir;
+  try {
+    const c=githubClient('owner/repo');
+    assert.equal(c.createDraft({app:'app',tag:'v1.0.0',title:'App',version:'1.0.0'},{channel:'stable',sourceSha:'a'.repeat(40)},'Notes').draft,true);
+  } finally {process.env.PATH=PATH;if(temp===undefined)delete process.env.RUNNER_TEMP;else process.env.RUNNER_TEMP=temp;fs.rmSync(dir,{recursive:true,force:true});}
+});
 test('a plan that selects nothing fails and says why for each app',async()=>{
   const f=fixture();f.manifest.apps.app.version='1.3.0-dev';await withRoot(f,()=>{
     const cli=path.resolve(import.meta.dirname,'../src/release.mjs');

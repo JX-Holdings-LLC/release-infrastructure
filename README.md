@@ -54,7 +54,7 @@ Every reusable workflow reference **and** its `toolkit-ref` input must use the s
 
 ## Security and publication
 
-`standard` requires nonempty regular assets, complete inventories, final SHA256 checksums, a source-bound draft, matching GitHub-recorded upload digests and sizes, and another tag-target check before exposing a release. Existing published versions are never overwritten. Existing drafts can be retried only with their original source and plan; unexpected draft assets require inspection. A later main SHA cannot retarget the old tag. All release pages are read, including pagination. Metadata/authentication errors fail rather than being treated as an empty release history.
+`standard` requires nonempty regular assets, complete inventories, final SHA256 checksums, a source-bound draft, matching GitHub-recorded upload digests and sizes, and another tag-target check before exposing a release. Existing published versions are never overwritten. Existing drafts can be retried only with their original source and plan; unexpected draft assets require inspection. A later main SHA cannot retarget the old tag. All release pages are read, including pagination. A draft the publisher has just created is looked for again for up to 15 seconds, because the release list can lag a new release. Metadata/authentication errors fail rather than being treated as an empty release history.
 
 `strict` additionally requires a checked-in PEM Ed25519 `publicKey`, and a matching `RELEASE_SIGNING_KEY_PEM` environment secret. A separate signing job produces `release-integrity.json` and `release-integrity.sig`, binding app, version, source SHA, and payload hashes. The publisher receives no private key. Payloads are streamed when hashing.
 
