@@ -9,7 +9,7 @@ Shared version validation, manual release selection, artifact verification, and 
 3. Run **Actions → Release → Run workflow** from **main**, select **stable** or **preview**, and leave **dry_run** enabled for the first run.
 4. Inspect all packages and smoke-test results. Dispatch again with dry run disabled when ready to publish, satisfying configured environment approvals.
 
-Only apps ahead of their published version in their own tag namespace are selected. Equal versions are skipped; decreases fail. Preview versions use SemVer prerelease suffixes. Build metadata is unsupported. Builds, signatures, and tags refer to the single captured source SHA.
+Only apps ahead of their published version in their own tag namespace are selected. Equal versions are skipped; decreases fail. A plan that selects no app fails, naming the reason each app was skipped (for example a pre-release version dispatched on the stable channel). Preview versions use SemVer prerelease suffixes. Build metadata is unsupported. Builds, signatures, and tags refer to the single captured source SHA.
 
 ## Consumer files
 
