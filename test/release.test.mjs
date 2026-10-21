@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {execFileSync} from 'node:child_process';
-import {compare,semver,validate,checkAdvances,select,verifyBundle,signBundle,publish,hashFile,safePath} from '../src/release.mjs';
+import {compare,semver,validate,checkAdvances,select,verifyBundle,signBundle,publish,hashFile,safePath,githubClient} from '../src/release.mjs';
 
 const source='a'.repeat(40);
 function fixture(strict=false) {
@@ -168,4 +168,21 @@ test('CLI validates real Git base comparisons and synchronizes patch bumps',asyn
     assert.equal(JSON.parse(fs.readFileSync('release.json')).apps.app.version,'1.2.4');
     const unbumped=git('rev-parse','HEAD');fs.writeFileSync('README.md','docs');git('add','.');git('commit','-qm','docs');assert.throws(()=>execFileSync(process.execPath,[cli,'validate','--base',unbumped],{stdio:'pipe'}));
   });
+});
+test('the GitHub client finds draft releases, which the by-tag endpoint hides', () => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'gh-'));
+  // Stands in for gh: like GitHub, releases/tags/{tag} answers 404 for a draft; the list shows it.
+  fs.writeFileSync(path.join(dir,'gh'),`#!/usr/bin/env node
+const a=process.argv.slice(2);
+if(a[0]==='api'&&a[1].includes('/releases/tags/')){console.error('gh: Not Found (HTTP 404)');process.exit(1);}
+if(a[0]==='api'&&a[1].includes('/releases?'))console.log(JSON.stringify([{tag_name:'v1.0.0',draft:true,assets:[]},{tag_name:'v0.9.0',draft:false,assets:[]}]));
+`,{mode:0o755});
+  const PATH=process.env.PATH, temp=process.env.RUNNER_TEMP;
+  process.env.PATH=dir+path.delimiter+PATH;process.env.RUNNER_TEMP=dir;
+  try {
+    const c=githubClient('owner/repo');
+    assert.equal(c.getRelease('v1.0.0').draft,true);
+    assert.equal(c.createDraft({app:'app',tag:'v1.0.0',title:'App',version:'1.0.0'},{channel:'stable',sourceSha:'a'.repeat(40)},'Notes').tag_name,'v1.0.0');
+    assert.throws(()=>c.getRelease('v2.0.0'),/No release found/);
+  } finally {process.env.PATH=PATH;if(temp===undefined)delete process.env.RUNNER_TEMP;else process.env.RUNNER_TEMP=temp;fs.rmSync(dir,{recursive:true,force:true});}
 });

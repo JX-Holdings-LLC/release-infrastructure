@@ -247,7 +247,13 @@ export async function publish(plan, app, manifest, config, bundle, client) {
   client.publish(selected,plan,Boolean(c.legacyLatest && plan.channel==='stable'));
   return selected.tag;
 }
-function githubClient(repo) {
+// GET releases/tags/{tag} only returns published releases, so a draft has to be found in the list.
+function releaseByTag(repo, tag) {
+  const release=releaseList(repo).find(r=>r.tag_name===tag);
+  if(!release)fail(`No release found for ${tag}`);
+  return release;
+}
+export function githubClient(repo) {
   return {
     releases:()=>releaseList(repo),tagTarget:tag=>tagTarget(repo,tag),
     createTag:(tag,sha)=>gh('api',`repos/${repo}/git/refs`,'-X','POST','-f',`ref=refs/tags/${tag}`,'-f',`sha=${sha}`),
@@ -255,7 +261,7 @@ function githubClient(repo) {
       const file=path.join(process.env.RUNNER_TEMP??'.release-tmp',`notes-${selected.app}.md`);
       write(file,notes+`\n\n<!-- release-source:${plan.sourceSha} -->\n`);
       gh('release','create',selected.tag,'--repo',repo,'--verify-tag','--draft','--title',`${selected.title} ${selected.version}`,'--notes-file',file,'--latest=false',...(plan.channel==='preview'?['--prerelease']:[]));
-      return api(`repos/${repo}/releases/tags/${encodeURIComponent(selected.tag)}`);
+      return releaseByTag(repo,selected.tag);
     },
     updateDraft:(selected,plan,notes)=>{
       const file=path.join(process.env.RUNNER_TEMP??'.release-tmp',`notes-${selected.app}.md`);
@@ -263,7 +269,7 @@ function githubClient(repo) {
       gh('release','edit',selected.tag,'--repo',repo,'--title',`${selected.title} ${selected.version}`,'--notes-file',file);
     },
     upload:(tag,files)=>gh('release','upload',tag,...files,'--repo',repo,'--clobber'),
-    getRelease:tag=>api(`repos/${repo}/releases/tags/${encodeURIComponent(tag)}`),
+    getRelease:tag=>releaseByTag(repo,tag),
     publish:(selected,plan,latest)=>gh('release','edit',selected.tag,'--repo',repo,'--draft=false',`--prerelease=${plan.channel==='preview'}`,`--latest=${latest}`)
   };
 }
