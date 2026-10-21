@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {execFileSync} from 'node:child_process';
-import {compare,semver,validate,checkAdvances,select,verifyBundle,signBundle,publish,hashFile,safePath,githubClient} from '../src/release.mjs';
+import {compare,semver,validate,checkAdvances,select,describe,notesFor,verifyBundle,signBundle,publish,hashFile,safePath,githubClient} from '../src/release.mjs';
 
 const source='a'.repeat(40);
 function fixture(strict=false) {
@@ -185,4 +185,62 @@ if(a[0]==='api'&&a[1].includes('/releases?'))console.log(JSON.stringify([{tag_na
     assert.equal(c.createDraft({app:'app',tag:'v1.0.0',title:'App',version:'1.0.0'},{channel:'stable',sourceSha:'a'.repeat(40)},'Notes').tag_name,'v1.0.0');
     assert.throws(()=>c.getRelease('v2.0.0'),/No release found/);
   } finally {process.env.PATH=PATH;if(temp===undefined)delete process.env.RUNNER_TEMP;else process.env.RUNNER_TEMP=temp;fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('a plan that selects nothing fails and says why for each app',async()=>{
+  const f=fixture();f.manifest.apps.app.version='1.3.0-dev';await withRoot(f,()=>{
+    const cli=path.resolve(import.meta.dirname,'../src/release.mjs');
+    fs.mkdirSync('.release');fs.writeFileSync('release.json',JSON.stringify(f.manifest));fs.writeFileSync('.release/config.json',JSON.stringify(f.config));
+    const git=(...args)=>execFileSync('git',args,{encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
+    git('init','-q');git('config','user.email','test@example.invalid');git('config','user.name','Test');git('add','.');git('commit','-qm','initial');
+    const bin=fs.mkdtempSync(path.join(os.tmpdir(),'gh-'));
+    fs.writeFileSync(path.join(bin,'gh'),`#!/usr/bin/env node\nconsole.log(JSON.stringify([{tag_name:'v1.2.3',draft:false}]));\n`,{mode:0o755});
+    const env={...process.env,PATH:bin+path.delimiter+process.env.PATH,GITHUB_REF:'refs/heads/main',GITHUB_SHA:git('rev-parse','HEAD'),GITHUB_REPOSITORY:'owner/repo',GITHUB_OUTPUT:path.resolve('out.txt'),GITHUB_STEP_SUMMARY:path.resolve('summary.md')};
+    const plan=channel=>execFileSync(process.execPath,[cli,'plan','--channel',channel,'--app',''],{env,encoding:'utf8',stdio:'pipe'});
+    try {
+      assert.throws(()=>plan('stable'),e=>/Nothing to release on the stable channel/.test(e.stderr)&&/app: skipped, 1\.3\.0-dev is a pre-release/.test(e.stderr));
+      assert.match(fs.readFileSync('summary.md','utf8'),/- app: skipped, 1\.3\.0-dev is a pre-release/);
+      assert.equal(fs.existsSync('out.txt'),false);
+      assert.match(plan('preview'),/app: releasing v1\.3\.0-dev on the preview channel/);
+      assert.match(fs.readFileSync('out.txt','utf8'),/^selected=true$/m);
+    } finally {fs.rmSync(bin,{recursive:true,force:true});}
+  });
+});
+test('skip reasons name the version and what to do',()=>{
+  assert.deepEqual(describe({selected:[],skipped:[{app:'a',version:'1.0.0',reason:'already published'},{app:'b',version:'2.0.0',reason:'other channel'}]},'preview'),
+    ['a: skipped, 1.0.0 is already published; advance the version to release again','b: skipped, 2.0.0 is not a pre-release; dispatch the stable channel']);
+});
+test('release notes cover every version since the latest published one',async()=>{
+  const f=fixture();f.manifest.apps.app.version='1.3.0';await withRoot(f,()=>{
+    const c=structuredClone(f.config);c.apps.app.notes='CHANGELOG.md';c.apps.app.notesSection=true;
+    fs.writeFileSync('CHANGELOG.md','# Changelog\n\n## 1.3.0\n\nNew map.\n\n## [1.2.5] - 2026-10-01\n\n### Fixed\n\nSaves.\n\n## Notes\n\nNot a version.\n\n## 1.2.4\n\nSpeed.\n\n## 1.2.3\n\nPublished.\n');
+    assert.equal(notesFor('app',f.manifest,c,'1.2.3'),'## 1.3.0\n\nNew map.\n\n## [1.2.5] - 2026-10-01\n\n### Fixed\n\nSaves.\n\n## 1.2.4\n\nSpeed.');
+    assert.equal(notesFor('app',f.manifest,c,'1.2.5'),'New map.');
+    assert.match(notesFor('app',f.manifest,c,null),/## 1\.2\.3\n\nPublished\.$/);
+    fs.writeFileSync('CHANGELOG.md','## 1.3.0\n\nNew map.\n\n## 1.2.4\n\nDESCRIBE_CHANGES\n');
+    assert.throws(()=>notesFor('app',f.manifest,c,'1.2.3'),/notes for app 1\.2\.4/);
+    assert.throws(()=>notesFor('app',{apps:{app:{...f.manifest.apps.app,version:'1.4.0'}}},c,'1.2.3'),/Missing 1\.4\.0 changelog section/);
+    c.apps.app.notesSection=false;c.apps.app.notes='notes/{app}-{version}.md';fs.mkdirSync('notes');
+    for(const [v,text] of [['1.2.3','Old.'],['1.2.4','Speed.'],['1.3.0','New map.'],['1.4.0','Future.']])fs.writeFileSync(`notes/app-${v}.md`,text+'\n');
+    assert.equal(notesFor('app',f.manifest,c,'1.2.3'),'New map.\n\nSpeed.');
+    c.apps.app.notes='{version}/notes.md';assert.throws(()=>notesFor('app',f.manifest,c,'1.2.3'),/file name/);
+  });
+});
+test('selection records the latest published version the notes start after',()=>{
+  const f=fixture();
+  assert.equal(select(f.manifest,f.config,[{tag_name:'v1.2.0',draft:false},{tag_name:'v1.2.2',draft:false},{tag_name:'v1.2.9',draft:true}]).selected[0].since,'1.2.2');
+  assert.equal(select(f.manifest,f.config,[]).selected[0].since,null);
+  fs.rmSync(f.root,{recursive:true,force:true});
+});
+test('bump adds a changelog section for section-based notes',async()=>{
+  const f=fixture();await withRoot(f,()=>{
+    const cli=path.resolve(import.meta.dirname,'../src/release.mjs');
+    f.config.apps.app.notes='CHANGELOG.md';f.config.apps.app.notesSection=true;
+    fs.mkdirSync('.release');fs.writeFileSync('release.json',JSON.stringify(f.manifest));fs.writeFileSync('.release/config.json',JSON.stringify(f.config));
+    fs.writeFileSync('CHANGELOG.md','# Changelog\n\n## 1.2.3\n\nOld.\n');
+    execFileSync(process.execPath,[cli,'bump','--app','app']);
+    assert.equal(fs.readFileSync('CHANGELOG.md','utf8'),'# Changelog\n\n## 1.2.4\n\nDESCRIBE_CHANGES\n\n## 1.2.3\n\nOld.\n');
+    fs.writeFileSync('CHANGELOG.md','# Changelog\n');
+    execFileSync(process.execPath,[cli,'bump','--app','app','--kind','minor']);
+    assert.equal(fs.readFileSync('CHANGELOG.md','utf8'),'# Changelog\n\n## 1.3.0\n\nDESCRIBE_CHANGES\n');
+  });
 });
