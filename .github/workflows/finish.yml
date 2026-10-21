@@ -49,6 +49,17 @@ jobs:
         with:
           name: ${{ inputs.artifact }}
           path: release-bundle
+      - name: Match the configured security profile
+        env:
+          RELEASE_APP: ${{ inputs.app }}
+          RELEASE_PROFILE: ${{ inputs.security }}
+        run: |
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const config = JSON.parse(readFileSync(".release/config.json", "utf8"));
+            if (config.apps[process.env.RELEASE_APP]?.security !== process.env.RELEASE_PROFILE)
+              throw new Error("Workflow security profile differs from captured configuration");
+          '
       - name: Sign final payload inventory
         if: inputs.security == 'strict'
         env:
