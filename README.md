@@ -9,7 +9,7 @@ Shared version validation, manual release selection, artifact verification, and 
 3. Run **Actions → Release → Run workflow** from **main**, select **stable** or **preview**, and leave **dry_run** enabled for the first run.
 4. Inspect all packages and smoke-test results. Dispatch again with dry run disabled when ready to publish, satisfying configured environment approvals.
 
-Only apps ahead of their published version in their own tag namespace are selected. Equal versions are skipped; decreases fail. A plan that selects no app fails, naming the reason each app was skipped (for example a pre-release version dispatched on the stable channel). Preview versions use SemVer prerelease suffixes. Build metadata is unsupported. Builds, signatures, and tags refer to the single captured source SHA.
+Only apps ahead of their published version in their own tag namespace are selected. Equal versions are skipped; decreases fail. A plan that selects no app fails, naming the reason each app was skipped (for example a pre-release version dispatched on the stable channel). Versions that were never dispatched are not published on their own: the release notes cover every version after the latest published one, newest first (each version's notes file, or each version's section of a section-based changelog). Preview versions use SemVer prerelease suffixes. Build metadata is unsupported. Builds, signatures, and tags refer to the single captured source SHA.
 
 ## Consumer files
 
@@ -85,7 +85,7 @@ node .toolkit/src/release.mjs plan --channel stable
 node .toolkit/src/release.mjs verify --app example --bundle release-bundle --sha SOURCE_SHA
 ```
 
-The bump command updates configured fields and creates a notes placeholder for version-specific notes files. Replace it before release; for section-based changelogs, add the new section yourself. Never silently delete app IDs or change tag prefixes. Use a fresh version for rollback. There is no implemented Prepare-release-PR button.
+The bump command updates configured fields and creates a notes placeholder: a version-specific notes file, or a `## X.Y.Z` section above the newest one in a section-based changelog. Replace it before release; a plan fails while any version it covers still has the placeholder. Never silently delete app IDs or change tag prefixes. Use a fresh version for rollback. There is no implemented Prepare-release-PR button.
 
 Run `npm run check` and `npm test` on Node 24+. Tests include numeric/prerelease ordering, configuration, version consistency, real-Git bump enforcement, bundles, strict signatures/tampering, draft retries, and simulated publication failures. Local tests and workflow lint do not establish that a native package installs correctly or that hosted release credentials are configured.
 

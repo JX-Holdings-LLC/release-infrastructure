@@ -116,7 +116,7 @@ export function select(manifest, config, releases, channel='stable', requested='
     const latest=versions.sort(compare).at(-1);
     if(latest && compare(app.version,latest)<0) fail(`${id} ${app.version} is behind published ${latest}`);
     if(latest && compare(app.version,latest)===0) {skipped.push({app:id,version:app.version,reason:'already published'});continue;}
-    selected.push({app:id,title:app.title,version:app.version,tag:c.tagPrefix+app.version,security:c.security});
+    selected.push({app:id,title:app.title,version:app.version,tag:c.tagPrefix+app.version,security:c.security,since:latest??null});
   }
   return {selected,skipped};
 }
@@ -128,18 +128,28 @@ export function describe(selection, channel) {
   };
   return [...selection.selected.map(s=>`${s.app}: releasing ${s.tag} on the ${channel} channel`),...selection.skipped.map(s=>`${s.app}: skipped, ${why[s.reason]?.(s)??s.reason}`)];
 }
-function notesFor(app, manifest, config) {
-  const version=manifest.apps[app].version, file=expand(config.apps[app].notes,app,version);
-  let content=read(file).trim();
-  if(config.apps[app].notesSection) {
-    const escaped=version.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-    const re=new RegExp(`^##\\s+\\[?v?${escaped}\\]?(?:[^\\r\\n]*)$`,'m');
-    const match=re.exec(content);
-    if(!match) fail(`Missing ${version} changelog section in ${file}`);
-    content=content.slice(match.index+match[0].length).split(/^##\s/m)[0].trim();
+// The notes of every version after `since` (the latest published one) up to the release, newest
+// first: versions advance on every main change, and only some of them are released.
+export function notesFor(app, manifest, config, since=null) {
+  const version=manifest.apps[app].version, c=config.apps[app];
+  const wanted=v=>{try{return compare(v,version)<=0 && (since===null || compare(v,since)>0);}catch{return false;}};
+  let parts=[];
+  if(c.notesSection) {
+    const file=expand(c.notes,app,version), content=read(file);
+    const headings=[...content.matchAll(/^##\s+\[?v?([^\s\]]+)\]?[^\r\n]*$/gm)];
+    headings.forEach((h,i)=>{if(wanted(h[1]))parts.push({version:h[1],heading:h[0],body:content.slice(h.index+h[0].length,headings[i+1]?.index??content.length).trim()});});
+    if(!parts.some(p=>p.version===version)) fail(`Missing ${version} changelog section in ${file}`);
+  } else {
+    const template=expand(c.notes,app,'\0'), dir=path.posix.dirname(template), pieces=path.posix.basename(template).split('\0');
+    if(dir.includes('\0') || pieces.length>2)fail(`{version} must appear at most once, in the notes file name: ${c.notes}`);
+    const [prefix,suffix]=pieces;
+    const versions=suffix===undefined?[version]:fs.readdirSync(dir).filter(n=>n.startsWith(prefix)&&n.endsWith(suffix)&&n.length>prefix.length+suffix.length).map(n=>n.slice(prefix.length,n.length-suffix.length)).filter(wanted);
+    if(!versions.includes(version)) fail(`Missing release notes: ${expand(c.notes,app,version)}`);
+    parts=versions.map(v=>({version:v,body:read(expand(c.notes,app,v)).trim()}));
   }
-  if(!content || /DESCRIBE_CHANGES|TODO_RELEASE_NOTES/.test(content)) fail(`Write real release notes for ${app}`);
-  return content;
+  parts.sort((a,b)=>compare(b.version,a.version));
+  for(const p of parts) if(!p.body || /DESCRIBE_CHANGES|TODO_RELEASE_NOTES/.test(p.body)) fail(`Write real release notes for ${app} ${p.version}`);
+  return parts.length===1?parts[0].body:parts.map(p=>p.heading?`${p.heading}\n\n${p.body}`:p.body).join('\n\n');
 }
 export async function hashFile(file) {
   const hash=crypto.createHash('sha256');
@@ -214,7 +224,7 @@ export async function publish(plan, app, manifest, config, bundle, client) {
   const releases=client.releases();
   const chosen=select(manifest,config,releases,plan.channel,app).selected;
   if(!chosen.length)fail('Version is already published');
-  const notes=notesFor(app,manifest,config);
+  const notes=notesFor(app,manifest,config,chosen[0].since);
   if(selected.notes!==notes)fail('Release notes differ from captured plan');
   const inv=await verifyBundle(app,manifest,config,bundle,plan.sourceSha);
   const checksum=c.checksumFile??'SHA256SUMS.txt';
@@ -312,7 +322,11 @@ export async function cli(args) {
     }
     manifest.apps[id].version=next;save('release.json',manifest);
     const c=config.apps[id];if(!c.notesSection){const file=expand(c.notes,id,next);if(!fs.existsSync(file))write(file,`# ${manifest.apps[id].title} ${next}\n\nDESCRIBE_CHANGES\n`);}
-    else console.log(`Add a ${next} section to ${c.notes}`);
+    else {
+      // A new section above the newest one, for the change that needs this version.
+      const file=expand(c.notes,id,next),text=read(file),at=text.search(/^## /m),entry=`## ${next}\n\nDESCRIBE_CHANGES\n`;
+      write(file,at<0?text.trimEnd()+'\n\n'+entry:text.slice(0,at)+entry+'\n'+text.slice(at));
+    }
     return;
   }
   if(command==='plan') {
@@ -324,7 +338,7 @@ export async function cli(args) {
     const lines=describe(selection,channel);console.log(lines.join('\n'));
     if(process.env.GITHUB_STEP_SUMMARY)fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,`### Release plan\n\n${lines.map(l=>`- ${l}`).join('\n')}\n`);
     if(!plan.selected.length)fail(`Nothing to release on the ${channel} channel:\n${lines.join('\n')}`);
-    for(const item of plan.selected)item.notes=notesFor(item.app,manifest,config);
+    for(const item of plan.selected)item.notes=notesFor(item.app,manifest,config,item.since);
     save('release-plan.json',plan);output('selected',String(plan.selected.length>0));output('sha',sourceSha);
     const apps={};for(const [id,m]of Object.entries(manifest.apps))apps[id]={...m,tag:config.apps[id].tagPrefix+m.version,selected:plan.selected.some(x=>x.app===id)};
     output('apps',apps);output('matrix',{include:plan.selected});
