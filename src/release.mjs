@@ -109,16 +109,24 @@ export function select(manifest, config, releases, channel='stable', requested='
   for(const [id,app] of Object.entries(manifest.apps)) {
     if(requested && requested!==id) continue;
     const c=config.apps[id]; const preview=semver(app.version).pre.length>0;
-    if(preview!==(channel==='preview')) {skipped.push({app:id,reason:'other channel'});continue;}
+    if(preview!==(channel==='preview')) {skipped.push({app:id,version:app.version,reason:'other channel'});continue;}
     const versions=releases.filter(r=>!r.draft && r.tag_name.startsWith(c.tagPrefix)).flatMap(r=>{
       const v=r.tag_name.slice(c.tagPrefix.length);try{const parsed=semver(v);return channel==='stable'&&(parsed.pre.length||r.prerelease)?[]:[v];}catch{return [];}
     });
     const latest=versions.sort(compare).at(-1);
     if(latest && compare(app.version,latest)<0) fail(`${id} ${app.version} is behind published ${latest}`);
-    if(latest && compare(app.version,latest)===0) {skipped.push({app:id,reason:'already published'});continue;}
+    if(latest && compare(app.version,latest)===0) {skipped.push({app:id,version:app.version,reason:'already published'});continue;}
     selected.push({app:id,title:app.title,version:app.version,tag:c.tagPrefix+app.version,security:c.security});
   }
   return {selected,skipped};
+}
+// One line per app, so a dispatch that releases nothing says why instead of skipping every job.
+export function describe(selection, channel) {
+  const why={
+    'other channel':s=>channel==='stable'?`${s.version} is a pre-release; commit the release version to main, or dispatch the preview channel`:`${s.version} is not a pre-release; dispatch the stable channel`,
+    'already published':s=>`${s.version} is already published; advance the version to release again`
+  };
+  return [...selection.selected.map(s=>`${s.app}: releasing ${s.tag} on the ${channel} channel`),...selection.skipped.map(s=>`${s.app}: skipped, ${why[s.reason]?.(s)??s.reason}`)];
 }
 function notesFor(app, manifest, config) {
   const version=manifest.apps[app].version, file=expand(config.apps[app].notes,app,version);
@@ -313,6 +321,9 @@ export async function cli(args) {
     if(sourceSha!==process.env.GITHUB_SHA)fail('Checkout differs from dispatch source SHA');
     const channel=options.channel??'stable';const selection=select(manifest,config,releaseList(repo),channel,options.app??'');
     const plan={schemaVersion:1,repository:repo,sourceSha,channel,...selection};
+    const lines=describe(selection,channel);console.log(lines.join('\n'));
+    if(process.env.GITHUB_STEP_SUMMARY)fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,`### Release plan\n\n${lines.map(l=>`- ${l}`).join('\n')}\n`);
+    if(!plan.selected.length)fail(`Nothing to release on the ${channel} channel:\n${lines.join('\n')}`);
     for(const item of plan.selected)item.notes=notesFor(item.app,manifest,config);
     save('release-plan.json',plan);output('selected',String(plan.selected.length>0));output('sha',sourceSha);
     const apps={};for(const [id,m]of Object.entries(manifest.apps))apps[id]={...m,tag:config.apps[id].tagPrefix+m.version,selected:plan.selected.some(x=>x.app===id)};
