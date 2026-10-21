@@ -1,0 +1,8 @@
+{
+  "name": "@jx-holdings/release-infrastructure",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {"node": ">=24"},
+  "scripts": {"check": "node --check src/release.mjs", "test": "node --test"}
+}

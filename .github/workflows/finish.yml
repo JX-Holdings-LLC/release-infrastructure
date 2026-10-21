@@ -1,0 +1,148 @@
+name: Verify and publish an app
+on:
+  workflow_call:
+    inputs:
+      toolkit-ref:
+        required: true
+        type: string
+      source-sha:
+        required: true
+        type: string
+      app:
+        required: true
+        type: string
+      security:
+        required: true
+        type: string
+      artifact:
+        required: true
+        type: string
+      dry-run:
+        default: true
+        type: boolean
+permissions:
+  contents: read
+jobs:
+  sign:
+    environment: ${{ format('release-sign-{0}', inputs.app) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require an immutable toolkit pin
+        env:
+          TOOLKIT_REF: ${{ inputs.toolkit-ref }}
+        run: '[[ "$TOOLKIT_REF" =~ ^[0-9a-f]{40}$ ]]'
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.source-sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: JX-Holdings-LLC/release-infrastructure
+          ref: ${{ inputs.toolkit-ref }}
+          path: .toolkit
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ inputs.artifact }}
+          path: release-bundle
+      - name: Match the configured security profile
+        env:
+          RELEASE_APP: ${{ inputs.app }}
+          RELEASE_PROFILE: ${{ inputs.security }}
+        run: |
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const config = JSON.parse(readFileSync(".release/config.json", "utf8"));
+            if (config.apps[process.env.RELEASE_APP]?.security !== process.env.RELEASE_PROFILE)
+              throw new Error("Workflow security profile differs from captured configuration");
+          '
+      - name: Sign final payload inventory
+        if: inputs.security == 'strict'
+        env:
+          RELEASE_SIGNING_KEY_PEM: ${{ secrets.RELEASE_SIGNING_KEY_PEM }}
+          RELEASE_SOURCE_SHA: ${{ inputs.source-sha }}
+          RELEASE_APP: ${{ inputs.app }}
+        run: node .toolkit/src/release.mjs sign --app "$RELEASE_APP" --bundle release-bundle
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: signed-${{ inputs.app }}
+          path: release-bundle
+          if-no-files-found: error
+  verify:
+    needs: sign
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require an immutable toolkit pin
+        env:
+          TOOLKIT_REF: ${{ inputs.toolkit-ref }}
+        run: '[[ "$TOOLKIT_REF" =~ ^[0-9a-f]{40}$ ]]'
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.source-sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: JX-Holdings-LLC/release-infrastructure
+          ref: ${{ inputs.toolkit-ref }}
+          path: .toolkit
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: signed-${{ inputs.app }}
+          path: release-bundle
+      - name: Verify final bytes with public keys only
+        env:
+          RELEASE_SOURCE_SHA: ${{ inputs.source-sha }}
+          RELEASE_APP: ${{ inputs.app }}
+        run: node .toolkit/src/release.mjs verify --app "$RELEASE_APP" --bundle release-bundle
+  publish:
+    if: ${{ !inputs.dry-run }}
+    needs: verify
+    environment: ${{ inputs.security == 'strict' && 'release-strict' || 'release' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: publish-${{ github.repository }}-${{ inputs.app }}
+      cancel-in-progress: false
+    steps:
+      - name: Require an immutable toolkit pin
+        env:
+          TOOLKIT_REF: ${{ inputs.toolkit-ref }}
+        run: '[[ "$TOOLKIT_REF" =~ ^[0-9a-f]{40}$ ]]'
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.source-sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: JX-Holdings-LLC/release-infrastructure
+          ref: ${{ inputs.toolkit-ref }}
+          path: .toolkit
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: signed-${{ inputs.app }}
+          path: release-bundle
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-plan
+          path: .
+      - name: Publish a complete verified draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SOURCE_SHA: ${{ inputs.source-sha }}
+          RELEASE_APP: ${{ inputs.app }}
+        run: node .toolkit/src/release.mjs publish --app "$RELEASE_APP" --bundle release-bundle
