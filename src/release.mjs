@@ -266,10 +266,16 @@ export async function publish(plan, app, manifest, config, bundle, client) {
   return selected.tag;
 }
 // GET releases/tags/{tag} only returns published releases, so a draft has to be found in the list.
-function releaseByTag(repo, tag) {
-  const release=releaseList(repo).find(r=>r.tag_name===tag);
-  if(!release)fail(`No release found for ${tag}`);
-  return release;
+// The list can lag a release created moments ago, so a lookup that expects one waits and tries again.
+const LIST_WAITS=[1000,2000,4000,8000];
+const pause=ms=>Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,ms);
+function releaseByTag(repo, tag, waits=[]) {
+  for(let i=0;;i++) {
+    const release=releaseList(repo).find(r=>r.tag_name===tag);
+    if(release)return release;
+    if(i>=waits.length)fail(`No release found for ${tag}`);
+    pause(waits[i]);
+  }
 }
 export function githubClient(repo) {
   return {
@@ -279,7 +285,7 @@ export function githubClient(repo) {
       const file=path.join(process.env.RUNNER_TEMP??'.release-tmp',`notes-${selected.app}.md`);
       write(file,notes+`\n\n<!-- release-source:${plan.sourceSha} -->\n`);
       gh('release','create',selected.tag,'--repo',repo,'--verify-tag','--draft','--title',`${selected.title} ${selected.version}`,'--notes-file',file,'--latest=false',...(plan.channel==='preview'?['--prerelease']:[]));
-      return releaseByTag(repo,selected.tag);
+      return releaseByTag(repo,selected.tag,LIST_WAITS);
     },
     updateDraft:(selected,plan,notes)=>{
       const file=path.join(process.env.RUNNER_TEMP??'.release-tmp',`notes-${selected.app}.md`);
